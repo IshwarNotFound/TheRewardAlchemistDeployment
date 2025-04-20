@@ -1,0 +1,17 @@
+# Virtual environment
+venv/
+/venv/
+*.venv
+
+# Generated Artifacts (Large Files) - Add this section!
+preprocessed_data_gnn/*.pkl
+preprocessed_data_gnn/*.pt
+preprocessed_data_gnn/*.csv
+
+# OS-specific (Good practice)
+.DS_Store
+Thumbs.db
+
+# IDE specific (optional)
+.idea/
+.vscode/

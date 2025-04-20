@@ -1,0 +1,51 @@
+# requirements.txt for The Reward Alchemist
+
+# ======================================================================
+# == !! IMPORTANT INSTALLATION ORDER !! ==
+# ======================================================================
+# 1. Install PyTorch FIRST using the official command for your system:
+#    https://pytorch.org/get-started/locally/
+#    (Select OS, pip, Python, CPU/CUDA)
+#
+# 2. Install PyTorch Geometric packages SECOND, matching your PyTorch version:
+#    https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
+#    (This often involves installing torch-scatter, torch-sparse first)
+#
+# 3. ONLY AFTER completing steps 1 & 2 successfully, run:
+#    pip install -r requirements.txt
+#    (To install the libraries listed below)
+# ======================================================================
+
+# Core Data Science & Utility Libraries
+pandas>=1.3.0
+numpy>=1.21.0
+scikit-learn>=1.0.0
+joblib>=1.0.0
+tqdm>=4.60.0 # Used in training script progress bars
+
+# Web Framework & Server
+Flask>=2.0.0
+gunicorn>=20.1.0 # Production WSGI server for deployment (used in Procfile)
+
+# NLP / Embeddings
+sentence-transformers>=2.2.0
+
+# Networking (for artifact download)
+requests>=2.25.0
+
+# --- PyTorch & PyTorch Geometric (Placeholders - Install Manually First!) ---
+# See IMPORTANT section above. These lines mainly document the need for them.
+# The actual installation command depends heavily on your system (OS/CPU/CUDA).
+# Example (Check official sites for current commands):
+# torch>=1.13.0,<2.1.0  # Specify version compatible with your PyG install
+# torch-scatter>=2.1.0 # Version depends on PyTorch/CUDA
+# torch-sparse>=0.6.17  # Version depends on PyTorch/CUDA
+# torch-geometric>=2.3.0 # Version depends on PyTorch/CUDA
+
+# --- Optional (If reading .xlsx files directly) ---
+# openpyxl>=3.0.0
+
+# Note: For exact replication and guaranteed compatibility, it's best practice to
+# activate your final working virtual environment and run:
+# pip freeze > requirements.txt
+# This will replace the >= constraints with exact == versions used in your setup.
