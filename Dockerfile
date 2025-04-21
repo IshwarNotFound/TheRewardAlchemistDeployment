@@ -1,31 +1,46 @@
 # Use an official Python runtime as a parent image
-# Match the Python version you've been using (e.g., 3.9)
-FROM python:3.9-slim
+# Choose a version compatible with your dependencies (3.9 or 3.10 are good)
+FROM python:3.10-slim
 
-# Set the working directory in the container
-WORKDIR /code
-
-# Set environment variables for Python
+# Set environment variables
+# Prevents Python from writing pyc files to disc (optional)
 ENV PYTHONDONTWRITEBYTECODE 1
+# Ensures Python output is sent straight to terminal (useful for logs)
 ENV PYTHONUNBUFFERED 1
 
-# Install system dependencies if any are needed (unlikely for this app)
-# RUN apt-get update && apt-get install -y --no-install-recommends some-package && rm -rf /var/lib/apt/lists/*
+# Create a non-root user and switch to it (good practice)
+RUN useradd -m appuser
+USER appuser
+
+# Set the working directory in the container
+WORKDIR /app
 
 # --- Dependency Installation ---
+# Copy the requirements file first to leverage Docker cache
+COPY --chown=appuser:appuser requirements.txt .
 
-# Upgrade pip
-RUN python -m pip install --upgrade pip
+# Install PyTorch and its dependencies (CPU version explicitly)
+# Adjust torch version if needed, this finds compatible pyg dependencies
+RUN pip install --no-cache-dir torch==$(python -c "import torch; print(torch.__version__)") --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir torch_scatter torch_sparse torch_geometric -f https://data.pyg.org/whl/torch-$(python -c 'import torch; print(torch.__version__)').html
 
-# Copy only requirements first to leverage Docker cache
-COPY requirements.txt .
-
-# Install packages from requirements.txt
+# Install other dependencies from requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install PyTorch CPU and PyTorch Geometric (adjust versions if needed)
-# Use the versions you confirmed worked or intended to use
-RUN pip install --no-cache-dir torch==1.13.1+cpu torchvision==0.14.1+cpu torchaudio==0.13.1 --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir torch_scatter torch_sparse torch_cluster torch_spline_`, `gunicorn`, `pandas`, `joblib`, `sentence-transformers`, `numpy<2.0`, etc., but **NOT** listing `torch` or `torch_geometric` packages).
-*   Your `templates` folder with `index.html`.
-*   This code should be committed and ideally pushed to your GitHub repo (though we'll push directly to the HF Space repo).
+# --- Application Code ---
+# Copy the rest of your application code into the working directory
+# Ensure all necessary files/folders (app.py, templates, etc.) are copied
+COPY --chown=appuser:appuser ./app.py .
+COPY --chown=appuser:appuser ./templates ./templates/
+# If you have other .py files or data directories needed at runtime (that aren't downloaded), copy them too
+# e.g., COPY --chown=appuser:appuser ./utils.py .
+# e.g., COPY --chown=appuser:appuser ./static ./static/
+
+# --- Runtime Configuration ---
+# Expose the port the app runs on (Hugging Face expects 7860 for web apps)
+EXPOSE 7860
+
+# Define the command to run your application using Gunicorn
+# app:app refers to the 'app' variable in your 'app.py' file
+# Use 0.0.0.0 to bind to all network interfaces within the container
+CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers=2", "app:app"]
