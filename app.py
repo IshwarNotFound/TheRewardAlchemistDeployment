@@ -29,7 +29,7 @@ import zipfile  # For extracting ZIP files
 import shutil   # For file operations (less needed now)
 import pandas as pd
 import numpy as np
-import joblib
+import joblib # Still used, but not for the main artifact load with map_location
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 from datetime import datetime, timedelta
@@ -43,6 +43,12 @@ import gc
 import random
 import time # Import time for potential sleep in debug
 from sentence_transformers import SentenceTransformer
+
+# === Imports for Custom Unpickler ===
+import pickle
+import io
+# ====================================
+
 try:
     from torch_geometric.nn import SAGEConv
     from torch_geometric.data import Data
@@ -74,7 +80,7 @@ CAMPAIGN_ID_COL = 'campaign_id'; CAMPAIGN_BUSINESS_NAME_COL = 'business_name'; C
 # --- Device Types & Location Maps (Match Data Gen Script) ---
 DEVICE_TYPES = ["Android Smartphone (Mid-Range)", "Android Smartphone (High-End)", "iOS Smartphone", "Tablet (Android)", "Tablet (iOS)", "Windows Desktop/Laptop", "MacOS Desktop/Laptop"]
 LOCATION_STANDARDIZATION_MAP = {"delhi (ncr)": "delhi", "new delhi": "delhi", "delhi": "delhi", "bangalore (bengaluru)": "bangalore", "bengaluru": "bangalore", "mumbai": "mumbai", "varanasi (benaras)": "varanasi", "benaras": "varanasi", "chennai": "chennai", "kolkata": "kolkata", "hyderabad": "hyderabad", "pune": "pune", "ahmedabad": "ahmedabad", "jaipur": "jaipur", "surat": "surat", "lucknow": "lucknow", "kanpur": "kanpur", "nagpur": "nagpur", "indore": "indore", "thane": "thane", "bhopal": "bhopal", "visakhapatnam": "visakhapatnam", "patna": "patna", "vadodara": "vadodara", "ludhiana": "ludhiana", "agra": "agra", "nashik": "nashik", "coimbatore": "coimbatore", "kochi": "kochi", "chandigarh": "chandigarh", "mysore": "mysore", "amritsar": "amritsar", "guwahati": "guwahati", "shimla": "shimla", "goa": "goa", "rishikesh": "rishikesh", "udaipur": "udaipur", "darjeeling": "darjeeling", "madurai": "madurai", "jodhpur": "jodhpur", "puducherry": "puducherry", "aurangabad": "aurangabad", "dehradun": "dehradun", "bhubaneswar": "bhubaneswar", "raipur": "raipur", "gurgaon": "gurugram", "gurugram": "gurugram", "unknown": "unknown", "nan": "unknown", "": "unknown"}
-LOCATION_TIERS_MAP = {"mumbai": "Tier 1", "delhi": "Tier 1", "bangalore": "Tier 1", "chennai": "Tier 1", "kolkata": "Tier 1", "hyderabad": "Tier 1", "pune": "Tier 1", "ahmedabad": "Tier 1", "gurugram": "Tier 1", "noida": "Tier 1", "jaipur": "Tier 2", "surat": "Tier 2", "lucknow": "Tier 2", "kanpur": "Tier 2", "nagpur": "Tier 2", "indore": "Tier 2", "thane": "Tier 2", "bhopal": "Tier 2", "visakhapatnam": "Tier 2", "patna": "Tier 2", "vadodara": "Tier 2", "ludhiana": "Tier 2", "agra": "Tier 2", "nashik": "Tier 2", "coimbatore": "Tier 2", "kochi": "Tier 2", "chandigarh": "Tier 2", "mysore": "Tier 2", "varanasi": "Tier 3", "amritsar": "Tier 3", "guwahati": "Tier 3", "madurai": "Tier 3", "jodhpur": "Tier 3", "aurangabad": "Tier 3", "dehradun": "Tier 3", "bhubaneswar": "Tier 3", "raipur": "Tier 3", "shimla": "Specialty", "goa": "Specialty", "rishikesh": "Specialty", "udaipur": "Specialty", "darjeeling": "Specialty", "puducherry": "Specialty", "unknown": "Unknown"}
+LOCATION_TIERS_MAP = {"mumbai": "Tier 1", "delhi": "Tier 1", "bangalore": "Tier 1", "chennai": "Tier 1", "kolkata": "Tier 1", "hyderabad": "Tier 1", "pune": "Tier 1", "ahmedabad": "Tier 1", "gurugram": "Tier 1", "noida": "Tier 1", "jaipur": "Tier 2", "surat": "Tier 2", "lucknow": "Tier 2", "kanpur": "Tier 2", "nagpur": "Tier 2", "indore": "Tier 2", "thane": "Tier 2", "bhopal": "Tier 2", "visakhapatnam": "Visakhapatnam": "Tier 2", "patna": "Patna": "Tier 2", "vadodara": "Vadodara": "Tier 2", "ludhiana": "Ludhiana": "Tier 2", "agra": "Agra": "Tier 2", "nashik": "Nashik": "Tier 2", "coimbatore": "Coimbatore": "Tier 2", "kochi": "Kochi": "Tier 2", "chandigarh": "Chandigarh": "Tier 2", "mysore": "Mysore": "Tier 2", "varanasi": "Varanasi": "Tier 3", "amritsar": "Amritsar": "Tier 3", "guwahati": "Guwahati": "Tier 3", "madurai": "Madurai": "Tier 3", "jodhpur": "Jodhpur": "Tier 3", "aurangabad": "Aurangabad": "Tier 3", "dehradun": "Dehradun": "Tier 3", "bhubaneswar": "Bhubaneswar": "Tier 3", "raipur": "Raipur": "Tier 3", "shimla": "Shimla": "Specialty", "goa": "Goa": "Specialty", "rishikesh": "Rishikesh": "Specialty", "udaipur": "Udaipur": "Specialty", "darjeeling": "Darjeeling": "Specialty", "puducherry": "Puducherry": "Specialty", "unknown": "Unknown": "Unknown"}
 LOCATION_REGIONS_MAP = {"NCR": ["delhi", "gurugram", "noida", "faridabad", "ghaziabad"], "Mumbai MMR": ["mumbai", "thane", "navi mumbai"], "South Tier 1": ["bangalore", "chennai", "hyderabad"], "West Tier 1/2": ["pune", "ahmedabad", "surat", "vadodara", "indore", "nagpur", "nashik", "bhopal", "aurangabad"], "North Tier 2/3/S": ["jaipur", "lucknow", "kanpur", "ludhiana", "chandigarh", "agra", "amritsar", "shimla", "dehradun", "rishikesh", "jodhpur"], "East Tier 1/2/3/S": ["kolkata", "patna", "bhubaneswar", "guwahati", "darjeeling", "raipur"], "South Tier 2/3/S": ["visakhapatnam", "coimbatore", "kochi", "mysore", "madurai", "puducherry", "goa", "varanasi"], "Unknown Region": ["unknown"]}
 
 # --- Options for Checkboxes (Derived from Data Gen Script) ---
@@ -199,6 +205,19 @@ def get_location_region_pred(standardized_location):
         if standardized_location in locations: return region
     return "Other"
 
+# === Custom Unpickler for CUDA to CPU Mapping ===
+import pickle
+import io
+class CPU_Unpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            # Return a function that calls torch.load with map_location='cpu'
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        else:
+            # Defer to the default behavior for other classes
+            return super().find_class(module, name)
+# ==============================================
+
 # === Load Model and Data Function ===
 def load_model_and_data():
     """Loads SBERT, GNN models, artifacts, and graph data. Downloads if necessary."""
@@ -291,11 +310,13 @@ def load_model_and_data():
             logger.info(f"[{func_name}] SBERT model loaded in {time.time() - start_sbert:.2f}s.")
         else: logger.info(f"[{func_name}] SBERT model already loaded.")
 
-        logger.info(f"[{func_name}] Loading main artifacts from {full_paths[MODEL_ARTIFACTS_FILE]}...")
+        # <<< FIX: Use Custom Unpickler for loading CUDA objects on CPU from PKL >>>
+        logger.info(f"[{func_name}] Loading main artifacts from {full_paths[MODEL_ARTIFACTS_FILE]} using custom unpickler...")
         with open(full_paths[MODEL_ARTIFACTS_FILE], 'rb') as f:
-            # <<< FIX: Add map_location for loading CUDA objects on CPU >>>
-            loaded_artifacts = joblib.load(f, mmap_mode=None, allow_pickle=True, encoding='latin1', map_location=torch.device('cpu'))
-        logger.info(f"[{func_name}] Loaded artifacts keys: {list(loaded_artifacts.keys())}")
+            loaded_artifacts = CPU_Unpickler(f).load()
+        logger.info(f"[{func_name}] Successfully loaded main artifacts using custom unpickler. Keys: {list(loaded_artifacts.keys())}")
+        # <<< END FIX >>>
+
 
         logger.info(f"[{func_name}] Loading preprocessed campaigns from {full_paths[CAMPAIGNS_PREPROCESSED_FILE]}...")
         campaigns_df_preprocessed = pd.read_csv(full_paths[CAMPAIGNS_PREPROCESSED_FILE], index_col=CAMPAIGN_ID_COL)
@@ -319,6 +340,7 @@ def load_model_and_data():
         model = GraphSAGE_GNN(num_node_features, gnn_hidden_channels, gnn_output_channels)
         predictor = LinkPredictor(gnn_output_channels)
         # Ensure model state dicts are loaded onto the correct device (CPU)
+        # The custom unpickler should handle the device mapping for the tensors within the state_dict
         model.load_state_dict(loaded_artifacts['model_state_dict'], strict=False) # strict=False might be needed if layer names changed slightly
         predictor.load_state_dict(loaded_artifacts['predictor_state_dict'], strict=False) # strict=False might be needed
         model.to(DEVICE); predictor.to(DEVICE); model.eval(); predictor.eval()
@@ -369,8 +391,12 @@ def predict_campaigns_gnn_flask(user_data: dict):
         # --- 1. User Data Preprocessing ---
         user_df = pd.DataFrame([user_data])
         user_defaults_pred_scalar = {USER_AGE_COL: 'unknown', USER_LOCATION_COL: 'unknown', USER_ACTIVITY_COL: 'medium (weekly)', USER_MONETARY_COL: 'medium spender', USER_DEVICE_COL: 'android smartphone (mid-range)', USER_WEATHER_COL: 'clear skies'}
-        for col, default in user_df.columns: user_df[col] = default
-        user_df.fillna(user_defaults_pred_scalar, inplace=True)
+        # FIX: Correct logic for filling defaults
+        for col in user_defaults_pred_scalar:
+            if col not in user_df.columns: user_df[col] = user_defaults_pred_scalar[col] # Assign default if column missing
+            else: user_df[col].fillna(user_defaults_pred_scalar[col], inplace=True) # Fill NaN if column exists
+        # user_df.fillna(user_defaults_pred_scalar, inplace=True) # This line was incorrect after the loop fix
+
         for col in [USER_INTERESTS_COL, USER_WATCH_CATEGORIES_COL]:
             if col not in user_df.columns: user_df[col] = pd.Series([[] for _ in range(len(user_df))], index=user_df.index)
             else: user_df[col] = user_df[col].apply(lambda x: x if isinstance(x, list) else ([] if pd.isna(x) else [str(x)]))
