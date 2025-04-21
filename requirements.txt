@@ -1,11 +1,4 @@
-# requirements.txt for The Reward Alchemist
-
-# ======================================================================
-# == !! IMPORTANT INSTALLATION ORDER (Handled by Build Command Now) !! ==
-# ======================================================================
-# PyTorch and PyTorch Geometric are now installed via the Render Build Command
-# to ensure correct versions and dependencies.
-# ======================================================================
+# requirements.txt for The Reward Alchemist (Docker Version)
 
 # Web Framework
 Flask>=2.0.0
@@ -15,14 +8,21 @@ gunicorn
 pandas>=1.3.0
 numpy>=1.21.0
 scikit-learn>=1.0.0
-joblib>=1.0.0
-tqdm>=4.60.0
+# joblib is included with scikit-learn
+# tqdm>=4.60.0 # Not explicitly imported in app.py, add if needed elsewhere
 
 # NLP / Embeddings
 sentence-transformers>=2.2.0
 
-# --- Optional (If reading .xlsx files directly) ---
-# openpyxl>=3.0.0
+# ==========================================================
+# == PyTorch / PyG Dependencies (CPU Versions Recommended) ==
+# ==========================================================
+# Pin versions for stability if needed, otherwise let pip resolve.
+# Using --index-url for CPU-specific builds is often safer.
+torch # Use PyTorch CPU index for reliability
+torch_scatter # Match PyTorch version
+torch_sparse # Match PyTorch version
+torch_geometric # Match PyTorch version
 
-# Note: For exact replication, use 'pip freeze > requirements.txt' in your
-# activated virtual environment once all packages are installed and working.
+# Utilities (already in app.py)
+requests
