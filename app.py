@@ -80,7 +80,9 @@ CAMPAIGN_ID_COL = 'campaign_id'; CAMPAIGN_BUSINESS_NAME_COL = 'business_name'; C
 # --- Device Types & Location Maps (Match Data Gen Script) ---
 DEVICE_TYPES = ["Android Smartphone (Mid-Range)", "Android Smartphone (High-End)", "iOS Smartphone", "Tablet (Android)", "Tablet (iOS)", "Windows Desktop/Laptop", "MacOS Desktop/Laptop"]
 LOCATION_STANDARDIZATION_MAP = {"delhi (ncr)": "delhi", "new delhi": "delhi", "delhi": "delhi", "bangalore (bengaluru)": "bangalore", "bengaluru": "bangalore", "mumbai": "mumbai", "varanasi (benaras)": "varanasi", "benaras": "varanasi", "chennai": "chennai", "kolkata": "kolkata", "hyderabad": "hyderabad", "pune": "pune", "ahmedabad": "ahmedabad", "jaipur": "jaipur", "surat": "surat", "lucknow": "lucknow", "kanpur": "kanpur", "nagpur": "nagpur", "indore": "indore", "thane": "thane", "bhopal": "bhopal", "visakhapatnam": "visakhapatnam", "patna": "patna", "vadodara": "vadodara", "ludhiana": "ludhiana", "agra": "agra", "nashik": "nashik", "coimbatore": "coimbatore", "kochi": "kochi", "chandigarh": "chandigarh", "mysore": "mysore", "amritsar": "amritsar", "guwahati": "guwahati", "shimla": "shimla", "goa": "goa", "rishikesh": "rishikesh", "udaipur": "udaipur", "darjeeling": "darjeeling", "madurai": "madurai", "jodhpur": "jodhpur", "puducherry": "puducherry", "aurangabad": "aurangabad", "dehradun": "dehradun", "bhubaneswar": "bhubaneswar", "raipur": "raipur", "gurgaon": "gurugram", "gurugram": "gurugram", "unknown": "unknown", "nan": "unknown", "": "unknown"}
-LOCATION_TIERS_MAP = {"mumbai": "Tier 1", "delhi": "Tier 1", "bangalore": "Tier 1", "chennai": "Tier 1", "kolkata": "Tier 1", "hyderabad": "Tier 1", "pune": "Tier 1", "ahmedabad": "Tier 1", "gurugram": "Tier 1", "noida": "Tier 1", "jaipur": "Tier 2", "surat": "Tier 2", "lucknow": "Tier 2", "kanpur": "Tier 2", "nagpur": "Tier 2", "indore": "Tier 2", "thane": "Tier 2", "bhopal": "Tier 2", "visakhapatnam": "Visakhapatnam": "Tier 2", "patna": "Patna": "Tier 2", "vadodara": "Vadodara": "Tier 2", "ludhiana": "Ludhiana": "Tier 2", "agra": "Agra": "Tier 2", "nashik": "Nashik": "Tier 2", "coimbatore": "Coimbatore": "Tier 2", "kochi": "Kochi": "Tier 2", "chandigarh": "Chandigarh": "Tier 2", "mysore": "Mysore": "Tier 2", "varanasi": "Varanasi": "Tier 3", "amritsar": "Amritsar": "Tier 3", "guwahati": "Guwahati": "Tier 3", "madurai": "Madurai": "Tier 3", "jodhpur": "Jodhpur": "Tier 3", "aurangabad": "Aurangabad": "Tier 3", "dehradun": "Dehradun": "Tier 3", "bhubaneswar": "Bhubaneswar": "Tier 3", "raipur": "Raipur": "Tier 3", "shimla": "Shimla": "Specialty", "goa": "Goa": "Specialty", "rishikesh": "Rishikesh": "Specialty", "udaipur": "Udaipur": "Specialty", "darjeeling": "Darjeeling": "Specialty", "puducherry": "Puducherry": "Specialty", "unknown": "Unknown": "Unknown"}
+# <<< FIX: Corrected Syntax in LOCATION_TIERS_MAP >>>
+LOCATION_TIERS_MAP = {"mumbai": "Tier 1", "delhi": "Tier 1", "bangalore": "Tier 1", "chennai": "Tier 1", "kolkata": "Tier 1", "hyderabad": "Tier 1", "pune": "Tier 1", "ahmedabad": "Tier 1", "gurugram": "Tier 1", "noida": "Tier 1", "jaipur": "Tier 2", "surat": "Tier 2", "lucknow": "Tier 2", "kanpur": "Tier 2", "nagpur": "Tier 2", "indore": "Tier 2", "thane": "Tier 2", "bhopal": "Tier 2", "visakhapatnam": "Tier 2", "patna": "Tier 2", "vadodara": "Tier 2", "ludhiana": "Tier 2", "agra": "Tier 2", "nashik": "Tier 2", "coimbatore": "Tier 2", "kochi": "Tier 2", "chandigarh": "Tier 2", "mysore": "Tier 2", "varanasi": "Tier 3", "amritsar": "Tier 3", "guwahati": "Tier 3", "madurai": "Tier 3", "jodhpur": "Tier 3", "aurangabad": "Tier 3", "dehradun": "Tier 3", "bhubaneswar": "Tier 3", "raipur": "Tier 3", "shimla": "Specialty", "goa": "Specialty", "rishikesh": "Specialty", "udaipur": "Specialty", "darjeeling": "Specialty", "puducherry": "Specialty", "unknown": "Unknown"}
+# <<< END FIX >>>
 LOCATION_REGIONS_MAP = {"NCR": ["delhi", "gurugram", "noida", "faridabad", "ghaziabad"], "Mumbai MMR": ["mumbai", "thane", "navi mumbai"], "South Tier 1": ["bangalore", "chennai", "hyderabad"], "West Tier 1/2": ["pune", "ahmedabad", "surat", "vadodara", "indore", "nagpur", "nashik", "bhopal", "aurangabad"], "North Tier 2/3/S": ["jaipur", "lucknow", "kanpur", "ludhiana", "chandigarh", "agra", "amritsar", "shimla", "dehradun", "rishikesh", "jodhpur"], "East Tier 1/2/3/S": ["kolkata", "patna", "bhubaneswar", "guwahati", "darjeeling", "raipur"], "South Tier 2/3/S": ["visakhapatnam", "coimbatore", "kochi", "mysore", "madurai", "puducherry", "goa", "varanasi"], "Unknown Region": ["unknown"]}
 
 # --- Options for Checkboxes (Derived from Data Gen Script) ---
@@ -311,9 +313,10 @@ def load_model_and_data():
         else: logger.info(f"[{func_name}] SBERT model already loaded.")
 
         # <<< FIX: Use Custom Unpickler for loading CUDA objects on CPU from PKL >>>
-        logger.info(f"[{func_name}] Loading main artifacts from {full_paths[MODEL_ARTIFACTS_FILE]} using custom unpickler...")
+        logger.info(f"[{func_name}] Attempting to load main artifacts using custom unpickler with map_location='cpu'...")
         with open(full_paths[MODEL_ARTIFACTS_FILE], 'rb') as f:
-            loaded_artifacts = CPU_Unpickler(f).load()
+             # Use the custom unpickler
+             loaded_artifacts = CPU_Unpickler(f).load()
         logger.info(f"[{func_name}] Successfully loaded main artifacts using custom unpickler. Keys: {list(loaded_artifacts.keys())}")
         # <<< END FIX >>>
 
@@ -395,7 +398,6 @@ def predict_campaigns_gnn_flask(user_data: dict):
         for col in user_defaults_pred_scalar:
             if col not in user_df.columns: user_df[col] = user_defaults_pred_scalar[col] # Assign default if column missing
             else: user_df[col].fillna(user_defaults_pred_scalar[col], inplace=True) # Fill NaN if column exists
-        # user_df.fillna(user_defaults_pred_scalar, inplace=True) # This line was incorrect after the loop fix
 
         for col in [USER_INTERESTS_COL, USER_WATCH_CATEGORIES_COL]:
             if col not in user_df.columns: user_df[col] = pd.Series([[] for _ in range(len(user_df))], index=user_df.index)
