@@ -8,14 +8,16 @@ numpy>=1.24.0
 scikit-learn>=1.3.0 # Or specific version like 1.6.1 from your log
 
 # -- PyTorch Core (CPU Version) --
-# Force pip to look for CPU-specific wheels first for torch packages
---index-url https://download.pytorch.org/whl/cpu
-torch==2.2.2+cpu  # Using a recent stable CPU version
+# ADD the PyTorch CPU index, but keep the default PyPI index
+--extra-index-url https://download.pytorch.org/whl/cpu
+# Pin torch CPU version - pip will look in PyPI then the extra index
+torch==2.2.2+cpu
 # torchvision==0.17.2+cpu # Add if needed by your models/transforms
 # torchaudio==2.2.2+cpu  # Add if needed by your models/transforms
 
 # -- PyTorch Geometric & Dependencies (CPU) --
-# Let pip find compatible CPU versions based on torch==2.2.2+cpu from the index above
+# Let pip find compatible CPU versions based on torch==2.2.2+cpu
+# It will check PyPI and the extra index
 torch-scatter
 torch-sparse
 torch-cluster # Often needed
@@ -25,16 +27,15 @@ torch-geometric
 # -- Sentence Transformers & Dependencies --
 sentence-transformers>=2.2.0 # Or specific version like 4.1.0 from your log
 transformers>=4.30.0 # sentence-transformers depends on this
-# huggingface-hub # Often installed as a dependency of transformers/sentence-transformers
+# huggingface-hub # Often installed as a dependency
 
-# -- Other potential dependencies seen in logs/imports --
-# Add any other specific libraries your code imports if not covered above
-# Examples (adjust versions if needed):
+# -- Other potential dependencies --
+# (Add/uncomment as needed)
 # Pillow>=9.0.0
 # PyYAML>=6.0
 # tqdm>=4.60.0
-# Jinja2>=3.1.0 # Usually installed with Flask
-# Werkzeug>=3.0.0 # Usually installed with Flask
-# itsdangerous>=2.0.0 # Usually installed with Flask
-# click>=8.0.0 # Usually installed with Flask
-# MarkupSafe>=2.0.0 # Usually installed with Jinja2
+# Jinja2>=3.1.0
+# Werkzeug>=3.0.0
+# itsdangerous>=2.0.0
+# click>=8.0.0
+# MarkupSafe>=2.0.0
