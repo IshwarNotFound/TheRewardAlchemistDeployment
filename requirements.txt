@@ -1,12 +1,13 @@
 # Core Data Science & Utility Libraries
 pandas>=1.3.0
-numpy>=1.21.0
+numpy<2.0 # Recommended to avoid v2 issues
 scikit-learn>=1.0.0
 joblib>=1.0.0
 tqdm>=4.60.0
 
 # Web Framework
 Flask>=2.0.0
+gunicorn>=21.0.0 # Add gunicorn if missing
 
 # NLP / Embeddings
 sentence-transformers>=2.2.0
