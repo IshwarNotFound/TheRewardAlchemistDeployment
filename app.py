@@ -318,14 +318,29 @@ def load_model_and_data():
 
         # <<< Use Custom Unpickler for loading main PKL (handles map_location) >>>
         # full_paths[MODEL_ARTIFACTS_FILE] now correctly points to the .pkl in BASE_DIR
-        logger.info(f"[{func_name}] Attempting to load main artifacts from '{full_paths[MODEL_ARTIFACTS_FILE]}' using custom unpickler...")
-        with open(full_paths[MODEL_ARTIFACTS_FILE], 'rb') as f:
-             loaded_artifacts = CPU_Unpickler(f).load()
-        # <<< IMPORTANT CHECK: Verify loaded_artifacts is a dictionary >>>
-        if not isinstance(loaded_artifacts, dict):
-            logger.error(f"[{func_name}] CRITICAL: Loaded artifact from PKL is type '{type(loaded_artifacts)}', expected 'dict'. Artifact file needs to be corrected.")
-            raise SystemExit(f"Loaded artifact is not a dictionary (type: {type(loaded_artifacts)}). Correct the artifact generation process.")
-        logger.info(f"[{func_name}] Successfully loaded main artifacts dictionary using custom unpickler. Keys: {list(loaded_artifacts.keys())}")
+        pkl_file_path = full_paths[MODEL_ARTIFACTS_FILE] # Get the path
+logger.info(f"[{func_name}] Attempting to load main artifacts from '{pkl_file_path}' using joblib.load...")
+try:
+    # Use joblib to load, consistent with how main.py saved it
+    loaded_artifacts = joblib.load(pkl_file_path)
+
+    # Add extra logging right after loading
+    logger.info(f"Successfully loaded object using joblib. Type: {type(loaded_artifacts)}")
+    if isinstance(loaded_artifacts, dict):
+        logger.info(f"Object IS a dictionary. Keys: {list(loaded_artifacts.keys())}")
+        # Proceed if it's a dictionary
+    else:
+        # If it's not a dict, log the critical error and exit as before
+        logger.error(f"[{func_name}] CRITICAL: Loaded artifact from PKL (using joblib) is type '{type(loaded_artifacts)}', expected 'dict'.")
+        raise SystemExit(f"Loaded artifact (using joblib) is not a dictionary (type: {type(loaded_artifacts)}). Correct the artifact generation process.")
+
+except FileNotFoundError:
+    logger.error(f"[{func_name}] File not found during joblib.load: {pkl_file_path}")
+    raise SystemExit(f"File not found during joblib.load: {pkl_file_path}")
+except Exception as load_err:
+    logger.error(f"[{func_name}] Error during joblib.load: {load_err}", exc_info=True)
+    raise SystemExit(f"Error loading artifact with joblib: {load_err}")
+
         # <<< END FIX >>>
 
         # full_paths[CAMPAIGNS_PREPROCESSED_FILE] now correctly points to the .csv in BASE_DIR
