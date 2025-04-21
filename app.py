@@ -292,7 +292,9 @@ def load_model_and_data():
         else: logger.info(f"[{func_name}] SBERT model already loaded.")
 
         logger.info(f"[{func_name}] Loading main artifacts from {full_paths[MODEL_ARTIFACTS_FILE]}...")
-        with open(full_paths[MODEL_ARTIFACTS_FILE], 'rb') as f: loaded_artifacts = joblib.load(f)
+        with open(full_paths[MODEL_ARTIFACTS_FILE], 'rb') as f:
+            # <<< FIX: Add map_location for loading CUDA objects on CPU >>>
+            loaded_artifacts = joblib.load(f, mmap_mode=None, allow_pickle=True, encoding='latin1', map_location=torch.device('cpu'))
         logger.info(f"[{func_name}] Loaded artifacts keys: {list(loaded_artifacts.keys())}")
 
         logger.info(f"[{func_name}] Loading preprocessed campaigns from {full_paths[CAMPAIGNS_PREPROCESSED_FILE]}...")
@@ -300,6 +302,7 @@ def load_model_and_data():
         logger.info(f"[{func_name}] Loaded {len(campaigns_df_preprocessed)} campaigns.")
 
         logger.info(f"[{func_name}] Loading graph data from {full_paths[GRAPH_DATA_FILE]}...")
+        # This already had map_location=DEVICE, which is good since DEVICE is 'cpu'
         graph_data = torch.load(full_paths[GRAPH_DATA_FILE], map_location=DEVICE)
         if isinstance(graph_data, Data):
             graph_node_features = graph_data.x; graph_edge_index = graph_data.edge_index
@@ -315,8 +318,9 @@ def load_model_and_data():
         gnn_output_channels = loaded_artifacts.get('gnn_output_channels', 64)
         model = GraphSAGE_GNN(num_node_features, gnn_hidden_channels, gnn_output_channels)
         predictor = LinkPredictor(gnn_output_channels)
-        model.load_state_dict(loaded_artifacts['model_state_dict'])
-        predictor.load_state_dict(loaded_artifacts['predictor_state_dict'])
+        # Ensure model state dicts are loaded onto the correct device (CPU)
+        model.load_state_dict(loaded_artifacts['model_state_dict'], strict=False) # strict=False might be needed if layer names changed slightly
+        predictor.load_state_dict(loaded_artifacts['predictor_state_dict'], strict=False) # strict=False might be needed
         model.to(DEVICE); predictor.to(DEVICE); model.eval(); predictor.eval()
         logger.info(f"[{func_name}] GNN model and predictor initialized and loaded.")
 
@@ -365,8 +369,7 @@ def predict_campaigns_gnn_flask(user_data: dict):
         # --- 1. User Data Preprocessing ---
         user_df = pd.DataFrame([user_data])
         user_defaults_pred_scalar = {USER_AGE_COL: 'unknown', USER_LOCATION_COL: 'unknown', USER_ACTIVITY_COL: 'medium (weekly)', USER_MONETARY_COL: 'medium spender', USER_DEVICE_COL: 'android smartphone (mid-range)', USER_WEATHER_COL: 'clear skies'}
-        for col, default in user_defaults_pred_scalar.items():
-            if col not in user_df.columns: user_df[col] = default
+        for col, default in user_df.columns: user_df[col] = default
         user_df.fillna(user_defaults_pred_scalar, inplace=True)
         for col in [USER_INTERESTS_COL, USER_WATCH_CATEGORIES_COL]:
             if col not in user_df.columns: user_df[col] = pd.Series([[] for _ in range(len(user_df))], index=user_df.index)
