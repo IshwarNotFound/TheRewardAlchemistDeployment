@@ -5,7 +5,8 @@ app.py: Flask Web Application for GNN Campaign Recommender
 This Flask application provides a web interface to interact with the pre-trained
 GraphSAGE campaign recommendation model (trained using main.py).
 It allows users to input their profile details via a web form,
-loads the necessary model artifacts and graph data, performs on-demand
+loads the necessary model artifacts and graph data (downloading from the
+ARTIFACT_URL specified in environment variables if needed), performs on-demand
 GNN and SBERT embedding calculations, predicts relevant campaigns,
 ranks them based on GNN score, proximity, and semantic similarity,
 and displays the top recommendations with explanations.
@@ -23,9 +24,9 @@ Requires:
 
 # === Imports ===
 import os
-import requests
-import zipfile
-import shutil
+import requests # For downloading
+import zipfile  # For extracting ZIP files
+import shutil   # For file operations (less needed now)
 import pandas as pd
 import numpy as np
 import joblib
@@ -152,12 +153,10 @@ def get_sbert_batch_embeddings(texts, model, batch_size=128):
 
         if valid_embeddings.shape[0] != len(valid_texts):
             logger.warning(f"SBERT encode mismatch! Expected {len(valid_texts)}, got {valid_embeddings.shape[0]}")
-            # Handle potential mismatch, e.g., return zeros or partial results safely
             min_len = min(len(original_indices), len(valid_embeddings))
             for i in range(min_len):
                  embeddings[original_indices[i]] = valid_embeddings[i]
         else:
-             # Fill embeddings back into original positions
             for i, embed_idx in enumerate(original_indices):
                  embeddings[embed_idx] = valid_embeddings[i]
 
@@ -165,7 +164,6 @@ def get_sbert_batch_embeddings(texts, model, batch_size=128):
 
     except RuntimeError as e: logger.warning(f"Runtime error during SBERT batch encode: {e}. Returning zeros.");
     except Exception as e: logger.warning(f"General error during SBERT batch encode: {e}. Returning zeros.");
-    # Fallback in case of any error during encoding
     return list(np.zeros((len(texts), EMBEDDING_DIM), dtype=np.float32))
 
 def get_sbert_embedding_pred(text, model):
@@ -176,30 +174,19 @@ def get_sbert_list_embedding_pred(list_text, model):
     """Generates an average SBERT embedding for a list of text items."""
     global EMBEDDING_DIM
     if not model: return np.zeros(EMBEDDING_DIM)
-
-    # Standardize input processing
     if isinstance(list_text, list):
         items = [item.strip() for item in list_text if isinstance(item, str) and item.strip()]
     elif isinstance(list_text, str) and list_text.strip():
         items = [item.strip() for item in list_text.split(',') if item.strip()]
-    else:
-        items = []
-
+    else: items = []
     if not items: return np.zeros(EMBEDDING_DIM)
-
-    item_embeddings_list = get_sbert_batch_embeddings(items, model, batch_size=len(items)) # Batch embed all items
-    item_embeddings = np.array(item_embeddings_list)
-    valid_mask = np.any(item_embeddings != 0, axis=1) # Check for non-zero embeddings
-
-    if not np.any(valid_mask): return np.zeros(EMBEDDING_DIM) # All items resulted in zero vectors
-
+    item_embeddings_list = get_sbert_batch_embeddings(items, model, batch_size=len(items))
+    item_embeddings = np.array(item_embeddings_list); valid_mask = np.any(item_embeddings != 0, axis=1)
+    if not np.any(valid_mask): return np.zeros(EMBEDDING_DIM)
     avg_embedding = np.mean(item_embeddings[valid_mask], axis=0)
-
-    # Final check for NaN/Inf just in case
     if np.any(~np.isfinite(avg_embedding)):
         logger.warning("Non-finite value encountered in average list embedding. Returning zero vector.")
         return np.zeros(EMBEDDING_DIM)
-
     return avg_embedding
 
 def standardize_location_pred(loc_str):
@@ -209,85 +196,76 @@ def standardize_location_pred(loc_str):
 def get_location_region_pred(standardized_location):
     """Gets the broader region for a standardized location."""
     for region, locations in LOCATION_REGIONS_MAP.items():
-        if standardized_location in locations:
-            return region
-    return "Other" # Default if not found
+        if standardized_location in locations: return region
+    return "Other"
 
-# === Load Model and Data Function (MODIFIED FOR KOYEB DOWNLOAD) ===
+# === Load Model and Data Function ===
 def load_model_and_data():
     """Loads SBERT, GNN models, artifacts, and graph data. Downloads if necessary."""
-    # <<< Declare globals that will be modified >>>
     global loaded_artifacts, campaigns_df_preprocessed, model, predictor, sbert_model
     global graph_node_features, graph_edge_index, EMBEDDING_DIM
 
     func_name="load_model_and_data"; logger.info(f"[{func_name}] Starting Application Initialization...")
 
     try:
-        # --- <<< Artifact Download/Check Logic >>> ---
-        artifacts_dir = PREPROCESSED_DIR # e.g., "preprocessed_data_gnn"
+        # --- Artifact Download/Check Logic ---
+        artifacts_dir = PREPROCESSED_DIR
         required_files = [ MODEL_ARTIFACTS_FILE, CAMPAIGNS_PREPROCESSED_FILE, GRAPH_DATA_FILE ]
         full_paths = {f: os.path.join(artifacts_dir, f) for f in required_files}
-
-        # Check if the directory AND all required files exist
         artifacts_exist = os.path.exists(artifacts_dir) and \
                           all(os.path.exists(p) for p in full_paths.values())
 
         if not artifacts_exist:
             logger.warning(f"[{func_name}] Artifacts not found locally in '{artifacts_dir}'. Attempting download...")
-            artifact_zip_url = os.environ.get('ARTIFACT_URL')
+            artifact_zip_url = os.environ.get('ARTIFACT_URL') # Expects direct URL (like GitHub Release)
             if not artifact_zip_url:
                 logger.error(f"[{func_name}] ARTIFACT_URL environment variable not set. Cannot download artifacts.")
-                raise SystemExit("Critical Error: ARTIFACT_URL environment variable not set.")
+                raise SystemExit("Critical Error: ARTIFACT_URL not set.")
 
-            zip_path = "artifacts_temp.zip" # Temporary name for the downloaded zip
+            zip_path = "artifacts_temp.zip"
             download_success = False
             try:
-                logger.info(f"[{func_name}] Downloading from URL (starts with): {artifact_zip_url[:70]}...")
-                # Use timeout and stream=True for large files
+                # <<< SIMPLE DOWNLOAD LOGIC FOR DIRECT URLS (GitHub) >>>
+                logger.info(f"[{func_name}] Downloading from direct URL: {artifact_zip_url}...")
                 response = requests.get(artifact_zip_url, stream=True, timeout=300) # 5 min timeout
-                response.raise_for_status() # Check for HTTP errors (like 404)
+                response.raise_for_status() # Check for HTTP errors (e.g., 404)
 
+                logger.info(f"[{func_name}] Streaming download content to {zip_path}...")
                 with open(zip_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192*4): # Download in larger chunks
+                    total_downloaded = 0
+                    for chunk in response.iter_content(chunk_size=8192*4):
                         f.write(chunk)
-                logger.info(f"[{func_name}] Download complete: {zip_path}")
+                        total_downloaded += len(chunk)
+                logger.info(f"[{func_name}] Download complete: {zip_path} ({total_downloaded / (1024*1024):.2f} MB)")
                 download_success = True
+                # <<< END SIMPLE DOWNLOAD LOGIC >>>
 
             except requests.exceptions.Timeout:
                  logger.error(f"[{func_name}] Timeout occurred while downloading artifacts from {artifact_zip_url}.")
+                 if os.path.exists(zip_path): os.remove(zip_path)
                  raise SystemExit("Artifact download timed out.") from None
             except requests.exceptions.RequestException as e:
                 logger.error(f"[{func_name}] Failed to download artifacts: {e}")
-                # Provide more context if possible (e.g., status code)
                 status_code = e.response.status_code if e.response is not None else "N/A"
                 logger.error(f"[{func_name}] Status Code: {status_code}")
+                if os.path.exists(zip_path): os.remove(zip_path)
                 raise SystemExit(f"Failed to download artifacts (status: {status_code}): {e}") from e
 
-            # If download was successful, extract
+            # --- Extraction Logic ---
             if download_success:
-                # Extract directly into the project root directory.
-                # Assumes the ZIP file contains the 'preprocessed_data_gnn' folder itself.
-                extract_to_dir = BASE_DIR # Extract to base directory
+                extract_to_dir = BASE_DIR
                 try:
                     logger.info(f"[{func_name}] Extracting {zip_path} to '{extract_to_dir}'...")
                     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                        # Check contents before extracting if needed (optional)
-                        # logger.info(f"ZIP Contents: {zip_ref.namelist()}")
                         zip_ref.extractall(extract_to_dir)
                     logger.info(f"[{func_name}] Extraction complete. Artifacts should now be in '{artifacts_dir}'.")
-
-                    # Verify again after extraction - crucial!
                     artifacts_exist = os.path.exists(artifacts_dir) and \
                                       all(os.path.exists(p) for p in full_paths.values())
                     if not artifacts_exist:
-                         logger.error(f"[{func_name}] Artifacts still not found after extraction. Check ZIP contents/structure. Ensure it contains '{os.path.basename(artifacts_dir)}/' with required files inside.")
-                         # List files found after extraction for debugging
-                         if os.path.exists(artifacts_dir):
-                             logger.error(f"Files found in {artifacts_dir}: {os.listdir(artifacts_dir)}")
-                         else:
-                             logger.error(f"Directory {artifacts_dir} does not exist after extraction.")
+                         logger.error(f"[{func_name}] Artifacts still not found after extraction. Check ZIP contents/structure.")
+                         if os.path.exists(artifacts_dir): logger.error(f"Files found in {artifacts_dir}: {os.listdir(artifacts_dir)}")
+                         else: logger.error(f"Directory {artifacts_dir} does not exist after extraction.")
                          raise SystemExit("Artifact extraction failed or ZIP structure incorrect.")
-
                 except zipfile.BadZipFile:
                      logger.error(f"[{func_name}] Error: Downloaded file '{zip_path}' is not a valid ZIP file.")
                      raise SystemExit("Downloaded artifact file is corrupted or not a ZIP.")
@@ -295,7 +273,6 @@ def load_model_and_data():
                      logger.error(f"[{func_name}] Failed to extract artifacts: {e}", exc_info=True)
                      raise SystemExit(f"Failed to extract artifacts: {e}") from e
                 finally:
-                    # Clean up the downloaded zip file regardless of extraction success/failure
                     if os.path.exists(zip_path):
                         try:
                             os.remove(zip_path)
@@ -303,118 +280,79 @@ def load_model_and_data():
                         except OSError as e:
                             logger.warning(f"[{func_name}] Could not remove temporary zip file {zip_path}: {e}")
         else:
-             # If artifacts already exist (e.g., from previous run or local testing)
              logger.info(f"[{func_name}] Found existing artifacts in '{artifacts_dir}'. Skipping download.")
-        # --- <<< End Artifact Download Logic >>> ---
+        # --- <<< End Artifact Handling Logic >>> ---
 
-        # --- Now, continue with the original loading logic, using full_paths ---
-        # 1. Load SBERT Model (Load first as it's independent)
-        if sbert_model is None: # Only load if not already loaded (idempotency)
+        # --- Load Models and Data ---
+        if sbert_model is None:
             logger.info(f"[{func_name}] Loading SBERT model ({SBERT_MODEL_NAME})...")
             start_sbert = time.time()
             sbert_model = SentenceTransformer(SBERT_MODEL_NAME, device=DEVICE)
-            # Optional: Perform a dummy encode to check if it works
-            # try:
-            #     _ = sbert_model.encode(["test"], device=DEVICE)
-            # except Exception as sbert_e:
-            #      logger.error(f"[{func_name}] SBERT model loaded but failed test encode: {sbert_e}")
-            #      raise SystemExit("SBERT model failed initialization.") from sbert_e
             logger.info(f"[{func_name}] SBERT model loaded in {time.time() - start_sbert:.2f}s.")
-        else:
-             logger.info(f"[{func_name}] SBERT model already loaded.")
+        else: logger.info(f"[{func_name}] SBERT model already loaded.")
 
-        # 2. Load Core Artifacts (.pkl)
         logger.info(f"[{func_name}] Loading main artifacts from {full_paths[MODEL_ARTIFACTS_FILE]}...")
-        with open(full_paths[MODEL_ARTIFACTS_FILE], 'rb') as f:
-            loaded_artifacts = joblib.load(f)
+        with open(full_paths[MODEL_ARTIFACTS_FILE], 'rb') as f: loaded_artifacts = joblib.load(f)
         logger.info(f"[{func_name}] Loaded artifacts keys: {list(loaded_artifacts.keys())}")
 
-        # 3. Load Preprocessed Campaigns CSV
         logger.info(f"[{func_name}] Loading preprocessed campaigns from {full_paths[CAMPAIGNS_PREPROCESSED_FILE]}...")
-        # Explicitly set index column if needed (assuming 'campaign_id' is the index)
         campaigns_df_preprocessed = pd.read_csv(full_paths[CAMPAIGNS_PREPROCESSED_FILE], index_col=CAMPAIGN_ID_COL)
         logger.info(f"[{func_name}] Loaded {len(campaigns_df_preprocessed)} campaigns.")
 
-        # 4. Load Graph Data (.pt)
         logger.info(f"[{func_name}] Loading graph data from {full_paths[GRAPH_DATA_FILE]}...")
-        graph_data = torch.load(full_paths[GRAPH_DATA_FILE], map_location=DEVICE) # Load directly to target device
-        if isinstance(graph_data, Data): # Check if it's a PyG Data object
-            graph_node_features = graph_data.x
-            graph_edge_index = graph_data.edge_index
+        graph_data = torch.load(full_paths[GRAPH_DATA_FILE], map_location=DEVICE)
+        if isinstance(graph_data, Data):
+            graph_node_features = graph_data.x; graph_edge_index = graph_data.edge_index
             logger.info(f"[{func_name}] Loaded graph data: Nodes={graph_node_features.shape[0]}, Edges={graph_edge_index.shape[1]}")
-        else: # Handle case if it's just a dict or tuple
-            logger.warning(f"[{func_name}] Loaded graph data is not a PyG Data object, attempting manual assignment.")
-            # Assuming keys 'x' and 'edge_index' if it's a dictionary
-            if isinstance(graph_data, dict) and 'x' in graph_data and 'edge_index' in graph_data:
-                 graph_node_features = graph_data['x'].to(DEVICE)
-                 graph_edge_index = graph_data['edge_index'].to(DEVICE)
-                 logger.info(f"[{func_name}] Loaded graph data from dict: Nodes={graph_node_features.shape[0]}, Edges={graph_edge_index.shape[1]}")
-            else:
-                 raise TypeError(f"Unsupported graph data format in {full_paths[GRAPH_DATA_FILE]}. Expected PyG Data object or dict with 'x', 'edge_index'.")
+        elif isinstance(graph_data, dict) and 'x' in graph_data and 'edge_index' in graph_data:
+            graph_node_features = graph_data['x'].to(DEVICE); graph_edge_index = graph_data['edge_index'].to(DEVICE)
+            logger.info(f"[{func_name}] Loaded graph data from dict: Nodes={graph_node_features.shape[0]}, Edges={graph_edge_index.shape[1]}")
+        else: raise TypeError(f"Unsupported graph data format in {full_paths[GRAPH_DATA_FILE]}.")
 
-
-        # 5. Initialize GNN Model and Predictor
         logger.info(f"[{func_name}] Initializing GNN model and Link Predictor...")
         num_node_features = graph_node_features.shape[1]
-        gnn_hidden_channels = loaded_artifacts.get('gnn_hidden_channels', 128) # Use saved or default
-        gnn_output_channels = loaded_artifacts.get('gnn_output_channels', 64) # Use saved or default
-
+        gnn_hidden_channels = loaded_artifacts.get('gnn_hidden_channels', 128)
+        gnn_output_channels = loaded_artifacts.get('gnn_output_channels', 64)
         model = GraphSAGE_GNN(num_node_features, gnn_hidden_channels, gnn_output_channels)
         predictor = LinkPredictor(gnn_output_channels)
-
-        # Load saved model state dicts
         model.load_state_dict(loaded_artifacts['model_state_dict'])
         predictor.load_state_dict(loaded_artifacts['predictor_state_dict'])
-        model.to(DEVICE) # Ensure model is on the correct device
-        predictor.to(DEVICE)
-        model.eval() # Set models to evaluation mode
-        predictor.eval()
+        model.to(DEVICE); predictor.to(DEVICE); model.eval(); predictor.eval()
         logger.info(f"[{func_name}] GNN model and predictor initialized and loaded.")
 
-        # Verify EMBEDDING_DIM matches SBERT model
         if sbert_model:
             try:
                 actual_sbert_dim = sbert_model.get_sentence_embedding_dimension()
                 if actual_sbert_dim != EMBEDDING_DIM:
-                    logger.warning(f"[{func_name}] Configured EMBEDDING_DIM ({EMBEDDING_DIM}) does not match loaded SBERT model dimension ({actual_sbert_dim}). Updating EMBEDDING_DIM.")
+                    logger.warning(f"[{func_name}] Configured EMBEDDING_DIM ({EMBEDDING_DIM}) != SBERT model ({actual_sbert_dim}). Updating EMBEDDING_DIM.")
                     EMBEDDING_DIM = actual_sbert_dim
-            except Exception as e:
-                logger.warning(f"[{func_name}] Could not verify SBERT model dimension: {e}")
-
-
+            except Exception as e: logger.warning(f"[{func_name}] Could not verify SBERT model dimension: {e}")
         logger.info(f"[{func_name}] Application Initialization Complete.")
 
     except FileNotFoundError as fnf_e:
-         logger.error(f"[{func_name}] ERROR: Required file not found after check/download attempts.")
-         logger.error(f"[{func_name}] Missing file: {fnf_e.filename}")
+         logger.error(f"[{func_name}] ERROR: Required file not found after check/download attempts: {fnf_e.filename}", exc_info=True)
          raise SystemExit(f"Critical file missing: {fnf_e.filename}") from fnf_e
-    except SystemExit: # Catch SystemExit specifically to avoid general Exception catch
-        raise # Re-raise SystemExit to allow clean termination
+    except SystemExit: raise # Re-raise SystemExit
     except Exception as e:
          logger.error(f"[{func_name}] Unexpected error during application initialization: {e}", exc_info=True)
          raise SystemExit(f"Failed to initialize application resources: {e}") from e
 
-# === <<< CRITICAL CHANGE: CALL THE LOADING FUNCTION IN GLOBAL SCOPE >>> ===
-# This ensures models/data are loaded when Gunicorn imports the 'app' object.
+# === <<< CALL THE LOADING FUNCTION IN GLOBAL SCOPE >>> ===
 logger.info("Starting application initialization process (global scope)...")
 try:
-    load_model_and_data() # Call the function to load everything
+    load_model_and_data() # Load everything
     logger.info("Initialization process finished.")
 except SystemExit as se:
     logger.critical(f"Application initialization aborted by SystemExit: {se}")
-    # Depending on deployment, the process might terminate here.
-    # If it continues, the app might be non-functional.
 except Exception as e:
      logger.critical(f"CRITICAL FAILURE during global initialization: {e}", exc_info=True)
-     # Log critical failure; app will likely be unusable.
 
 # === Prediction Function ===
-@torch.no_grad() # Disable gradient calculations for inference
+@torch.no_grad()
 def predict_campaigns_gnn_flask(user_data: dict):
     """Performs campaign prediction based on user data using loaded models."""
-    global loaded_artifacts, campaigns_df_preprocessed, model, predictor, sbert_model, graph_node_features, graph_edge_index # Access globals
-    func_name = "predict_campaigns_gnn_flask"
-    user_display_id = user_data.get(USER_ID_COL, 'N/A') # For logging
+    global loaded_artifacts, campaigns_df_preprocessed, model, predictor, sbert_model, graph_node_features, graph_edge_index
+    func_name = "predict_campaigns_gnn_flask"; user_display_id = user_data.get(USER_ID_COL, 'N/A')
     logger.info(f"[{func_name}] Received prediction request for User: {user_display_id}")
 
     # --- Pre-check: Ensure resources are loaded ---
@@ -424,511 +362,236 @@ def predict_campaigns_gnn_flask(user_data: dict):
 
     start_total_time = time.time()
     try:
-        # --- 1. User Data Preprocessing & Tier Calc ---
-        user_df = pd.DataFrame([user_data]) # Create DataFrame from single user dict
-        # Define defaults (use lowercase standard form)
-        user_defaults_pred_scalar = {
-            USER_AGE_COL: 'unknown', USER_LOCATION_COL: 'unknown',
-            USER_ACTIVITY_COL: 'medium (weekly)', USER_MONETARY_COL: 'medium spender',
-            USER_DEVICE_COL: 'android smartphone (mid-range)', USER_WEATHER_COL: 'clear skies'
-        }
-        # Fill NaNs and ensure required columns exist
+        # --- 1. User Data Preprocessing ---
+        user_df = pd.DataFrame([user_data])
+        user_defaults_pred_scalar = {USER_AGE_COL: 'unknown', USER_LOCATION_COL: 'unknown', USER_ACTIVITY_COL: 'medium (weekly)', USER_MONETARY_COL: 'medium spender', USER_DEVICE_COL: 'android smartphone (mid-range)', USER_WEATHER_COL: 'clear skies'}
         for col, default in user_defaults_pred_scalar.items():
             if col not in user_df.columns: user_df[col] = default
         user_df.fillna(user_defaults_pred_scalar, inplace=True)
-        # Ensure list columns are actually lists (handle empty form submissions)
         for col in [USER_INTERESTS_COL, USER_WATCH_CATEGORIES_COL]:
-            if col not in user_df.columns:
-                 user_df[col] = pd.Series([[] for _ in range(len(user_df))], index=user_df.index)
-            else:
-                 # Ensure items are lists, even if input was single string/None
-                 user_df[col] = user_df[col].apply(lambda x: x if isinstance(x, list) else ([] if pd.isna(x) else [str(x)]))
-
-        # Standardize relevant text fields to lowercase
+            if col not in user_df.columns: user_df[col] = pd.Series([[] for _ in range(len(user_df))], index=user_df.index)
+            else: user_df[col] = user_df[col].apply(lambda x: x if isinstance(x, list) else ([] if pd.isna(x) else [str(x)]))
         for col in [USER_LOCATION_COL, USER_ACTIVITY_COL, USER_MONETARY_COL, USER_DEVICE_COL, USER_WEATHER_COL]:
              user_df[col] = user_df[col].astype(str).str.lower().str.strip()
-
-        # Extract key user features after preprocessing
         user_loc_raw = user_df[USER_LOCATION_COL].iloc[0]; user_loc_standardized = standardize_location_pred(user_loc_raw); user_region = get_location_region_pred(user_loc_standardized)
-        user_activity_level = user_df[USER_ACTIVITY_COL].iloc[0]
-        user_interest_data = user_df[USER_INTERESTS_COL].iloc[0] # Should be a list now
-        user_watch_data = user_df[USER_WATCH_CATEGORIES_COL].iloc[0] # Should be a list now
+        user_activity_level = user_df[USER_ACTIVITY_COL].iloc[0]; user_interest_data = user_df[USER_INTERESTS_COL].iloc[0]; user_watch_data = user_df[USER_WATCH_CATEGORIES_COL].iloc[0]
         logger.info(f"[{func_name}] User Loc:'{user_loc_raw}'->Std:'{user_loc_standardized}'->Region:'{user_region}'. Activity:'{user_activity_level}'")
-        logger.debug(f"[{func_name}] User Interests: {user_interest_data}, Watch History: {user_watch_data}")
 
-
-        # --- 2. Calculate GNN Embeddings ON DEMAND ---
-        # This step might be slow if graph is very large. Consider caching if needed.
-        logger.info(f"[{func_name}] Calculating GNN node embeddings...")
-        start_time_gnn = time.time()
-        # Ensure tensors are on the correct device and contiguous
-        x_feat = graph_node_features.to(DEVICE).contiguous()
-        edge_idx = graph_edge_index.to(DEVICE).contiguous()
-        # Perform GNN forward pass
+        # --- 2. Calculate GNN Embeddings ---
+        logger.info(f"[{func_name}] Calculating GNN node embeddings..."); start_time_gnn = time.time()
+        x_feat = graph_node_features.to(DEVICE).contiguous(); edge_idx = graph_edge_index.to(DEVICE).contiguous()
         all_node_embeddings = model(x_feat, edge_idx)
-        # Clean up intermediate tensors if they differ from globals (unlikely here but good practice)
         if id(x_feat) != id(graph_node_features): del x_feat
         if id(edge_idx) != id(graph_edge_index): del edge_idx
         gc.collect(); end_time_gnn = time.time()
         logger.info(f"[{func_name}] GNN embedding calculation took: {end_time_gnn - start_time_gnn:.3f}s")
 
-
         # --- 3. Calculate GNN Scores & Avg Relevance ---
-        logger.debug(f"[{func_name}] Calculating GNN link prediction scores...")
         num_users = loaded_artifacts['num_users']; num_campaigns = loaded_artifacts['num_campaigns']
-        user_map = loaded_artifacts['user_map']
-        campaign_indices = list(range(num_users, num_users + num_campaigns))
-
-        # Check if indices are valid
+        user_map = loaded_artifacts['user_map']; campaign_indices = list(range(num_users, num_users + num_campaigns))
         if not campaign_indices or max(campaign_indices) >= all_node_embeddings.shape[0]:
-            logger.error(f"[{func_name}] Invalid campaign indices generated. Max index: {max(campaign_indices)}, Embeddings shape: {all_node_embeddings.shape}")
-            raise ValueError("Campaign indices out of bounds for node embeddings.")
-
-        # Get user embedding (handle unknown users)
+            raise ValueError(f"Campaign indices out of bounds ({max(campaign_indices)}) for node embeddings ({all_node_embeddings.shape[0]}).")
         user_orig_id = user_df.iloc[0].get(USER_ID_COL); user_node_idx = user_map.get(str(user_orig_id)) if user_orig_id else None
         if user_node_idx is not None and user_node_idx < num_users:
-            user_embedding = all_node_embeddings[user_node_idx].unsqueeze(0) # Get specific user embedding
-            logger.info(f"[{func_name}] Found known user '{user_orig_id}' (Node Index: {user_node_idx}).")
+            user_embedding = all_node_embeddings[user_node_idx].unsqueeze(0); logger.info(f"[{func_name}] Found known user '{user_orig_id}' (Idx: {user_node_idx}).")
         else:
-            logger.warning(f"[{func_name}] User '{user_orig_id}' not found in user_map or is invalid. Using average user embedding as fallback.")
-            # Calculate average embedding of known users (if any)
-            if num_users > 0:
-                user_embedding = all_node_embeddings[:num_users].mean(dim=0, keepdim=True)
-            else: # Handle edge case of no users in graph
-                 logger.warning(f"[{func_name}] No user nodes found in graph data. Using zero vector for user embedding.")
-                 user_embedding = torch.zeros((1, all_node_embeddings.shape[1]), device=DEVICE)
-
-        # Get campaign embeddings
-        campaign_embeddings_gnn = all_node_embeddings[campaign_indices]
-        # Repeat user embedding to match number of campaigns for prediction
-        user_embedding_repeated = user_embedding.repeat(len(campaign_indices), 1)
-
-        # Predict link scores
-        all_scores = predictor(user_embedding_repeated, campaign_embeddings_gnn)
-        all_scores_sigmoid = torch.sigmoid(all_scores) # Convert logits to probabilities
-        all_scores_np = all_scores_sigmoid.cpu().numpy() # Move to CPU and convert to numpy
-
-        # Calculate average relevance score (for tier calculation)
-        avg_gnn_score_threshold = 0.5 # Define threshold for 'relevant'
-        relevant_scores = all_scores_np[all_scores_np > avg_gnn_score_threshold]
+            logger.warning(f"[{func_name}] User '{user_orig_id}' unknown. Using average user embedding.");
+            user_embedding = all_node_embeddings[:num_users].mean(dim=0, keepdim=True) if num_users > 0 else torch.zeros((1, all_node_embeddings.shape[1]), device=DEVICE)
+        campaign_embeddings_gnn = all_node_embeddings[campaign_indices]; user_embedding_repeated = user_embedding.repeat(len(campaign_indices), 1);
+        all_scores = predictor(user_embedding_repeated, campaign_embeddings_gnn); all_scores_sigmoid = torch.sigmoid(all_scores); all_scores_np = all_scores_sigmoid.cpu().numpy()
+        avg_gnn_score_threshold = 0.5; relevant_scores = all_scores_np[all_scores_np > avg_gnn_score_threshold]
         avg_relevance_score = np.mean(relevant_scores) if relevant_scores.size > 0 else (np.mean(all_scores_np) if all_scores_np.size > 0 else 0.0)
         logger.info(f"[{func_name}] User Avg GNN Relevance Score (>{avg_gnn_score_threshold:.2f}): {avg_relevance_score:.4f}")
 
         # --- 4. Calculate Dynamic User Tier ---
-        # Define keywords for activity levels (lowercase)
-        high_activity_keywords = ['very high', 'daily', 'high', 'multiple weekly']
-        medium_activity_keywords = ['medium', 'weekly']
-        # Define thresholds for tier promotion based on relevance score
-        score_threshold_elite = 0.75
-        score_threshold_prem = 0.60
-        dynamic_user_tier = "Basic" # Default tier
+        high_activity_keywords = ['very high', 'daily', 'high', 'multiple weekly']; medium_activity_keywords = ['medium', 'weekly']
+        score_threshold_elite = 0.75; score_threshold_prem = 0.60; dynamic_user_tier = "Basic"
+        is_high_activity = any(keyword in user_activity_level for keyword in high_activity_keywords); is_medium_activity = any(keyword in user_activity_level for keyword in medium_activity_keywords)
+        if is_high_activity and avg_relevance_score >= score_threshold_prem: dynamic_user_tier = "Elite"
+        elif (is_medium_activity and avg_relevance_score >= score_threshold_elite) or (avg_relevance_score >= score_threshold_elite): dynamic_user_tier = "Premium"
+        logger.info(f"[{func_name}] Calculated dynamic user tier: {dynamic_user_tier}")
 
-        is_high_activity = any(keyword in user_activity_level for keyword in high_activity_keywords)
-        is_medium_activity = any(keyword in user_activity_level for keyword in medium_activity_keywords)
+        # --- 5. Get User SBERT Embeddings ---
+        logger.debug(f"[{func_name}] Generating SBERT embeddings for user profile..."); start_time_sbert_user = time.time()
+        user_interest_emb_np = get_sbert_list_embedding_pred(user_interest_data, sbert_model).reshape(1, -1)
+        user_watch_emb_np = get_sbert_list_embedding_pred(user_watch_data, sbert_model).reshape(1, -1)
+        end_time_sbert_user = time.time(); logger.info(f"[{func_name}] User SBERT calculation took: {end_time_sbert_user - start_time_sbert_user:.3f}s")
 
-        # Tier logic: Elite requires high activity & good score, Premium requires high score OR (medium activity & high score)
-        if is_high_activity and avg_relevance_score >= score_threshold_prem:
-             dynamic_user_tier = "Elite"
-        elif (is_medium_activity and avg_relevance_score >= score_threshold_elite) or (avg_relevance_score >= score_threshold_elite): # Anyone with very high score gets Premium
-             dynamic_user_tier = "Premium"
-        logger.info(f"[{func_name}] Calculated dynamic user tier: {dynamic_user_tier} (Activity: {user_activity_level}, Avg Score: {avg_relevance_score:.4f})")
-
-        # --- 5. Get User SBERT Embeddings ON DEMAND ---
-        logger.debug(f"[{func_name}] Generating SBERT embeddings for user profile (interests, watch history)...")
-        start_time_sbert_user = time.time()
-        # Use helper function for list embeddings
-        user_interest_emb_np = get_sbert_list_embedding_pred(user_interest_data, sbert_model).reshape(1, -1) # Ensure 2D for cosine_similarity
-        user_watch_emb_np = get_sbert_list_embedding_pred(user_watch_data, sbert_model).reshape(1, -1) # Ensure 2D
-        end_time_sbert_user = time.time()
-        logger.info(f"[{func_name}] User SBERT calculation took: {end_time_sbert_user - start_time_sbert_user:.3f}s")
-
-
-        # --- 6. Prepare Candidate List (Calculate Campaign SBERT & Similarities ON DEMAND) ---
-        logger.info(f"[{func_name}] Calculating proximity and semantic scores for {num_campaigns} campaigns...")
-        reverse_campaign_map = loaded_artifacts['reverse_campaign_map'] # Node index -> original ID
-        # Pre-fetch necessary campaign data for efficiency
+        # --- 6. Prepare Candidate List (SBERT & Similarities) ---
+        logger.info(f"[{func_name}] Calculating proximity & semantic scores for {num_campaigns} campaigns...");
+        reverse_campaign_map = loaded_artifacts['reverse_campaign_map']
         campaign_data_subset = campaigns_df_preprocessed[[CAMPAIGN_LOCATION_COL, CAMPAIGN_PROMO_COL, CAMPAIGN_CATEGORY_COL]].copy()
-        campaign_data_subset[CAMPAIGN_LOCATION_COL] = campaign_data_subset[CAMPAIGN_LOCATION_COL].astype(str).str.lower().str.strip().map(standardize_location_pred) # Standardize locations
-
-        # Prepare lists for batch SBERT embedding
-        campaign_ids_in_order = []
-        promo_texts_to_embed = []
-        category_texts_to_embed = []
-        gnn_scores_in_order = {} # Store GNN scores mapped by original ID
-
+        campaign_data_subset[CAMPAIGN_LOCATION_COL] = campaign_data_subset[CAMPAIGN_LOCATION_COL].astype(str).str.lower().str.strip().map(standardize_location_pred)
+        campaign_ids_in_order = []; promo_texts_to_embed = []; category_texts_to_embed = []; gnn_scores_in_order = {}
         for i, gnn_score_val in enumerate(all_scores_np):
-             campaign_node_idx = campaign_indices[i]
-             original_campaign_id = reverse_campaign_map.get(campaign_node_idx)
-             if not original_campaign_id:
-                 logger.warning(f"[{func_name}] No original campaign ID found for node index {campaign_node_idx}. Skipping.")
-                 continue
-             if original_campaign_id not in campaign_data_subset.index:
-                  logger.warning(f"[{func_name}] Campaign ID {original_campaign_id} from map not found in preprocessed data. Skipping.")
-                  continue
-
-             campaign_ids_in_order.append(original_campaign_id)
-             gnn_scores_in_order[original_campaign_id] = float(gnn_score_val)
+             campaign_node_idx = campaign_indices[i]; original_campaign_id = reverse_campaign_map.get(campaign_node_idx)
+             if not original_campaign_id or original_campaign_id not in campaign_data_subset.index: continue
+             campaign_ids_in_order.append(original_campaign_id); gnn_scores_in_order[original_campaign_id] = float(gnn_score_val)
              promo_texts_to_embed.append(campaign_data_subset.loc[original_campaign_id, CAMPAIGN_PROMO_COL])
              category_texts_to_embed.append(campaign_data_subset.loc[original_campaign_id, CAMPAIGN_CATEGORY_COL])
-
-        logger.info(f"[{func_name}] Calculating batch SBERT embeddings for {len(campaign_ids_in_order)} valid campaigns...")
-        start_time_sbert_camp = time.time()
-        # Use batch embedding function
+        logger.info(f"[{func_name}] Calculating batch SBERT embeddings for {len(campaign_ids_in_order)} valid campaigns..."); start_time_sbert_camp = time.time()
         campaign_promo_embeds_list = get_sbert_batch_embeddings(promo_texts_to_embed, sbert_model)
         campaign_category_embeds_list = get_sbert_batch_embeddings(category_texts_to_embed, sbert_model)
-        end_time_sbert_camp = time.time()
-        logger.info(f"[{func_name}] Campaign SBERT calculation took: {end_time_sbert_camp - start_time_sbert_camp:.3f}s")
-
-        # Create dictionaries mapping campaign ID to its embedding
+        end_time_sbert_camp = time.time(); logger.info(f"[{func_name}] Campaign SBERT calculation took: {end_time_sbert_camp - start_time_sbert_camp:.3f}s")
         campaign_promo_embeddings = {cid: emb for cid, emb in zip(campaign_ids_in_order, campaign_promo_embeds_list)}
         campaign_category_embeddings = {cid: emb for cid, emb in zip(campaign_ids_in_order, campaign_category_embeds_list)}
-
-        # Calculate final scores for each candidate
         all_candidates_info = []
         for original_campaign_id in campaign_ids_in_order:
-            gnn_score = gnn_scores_in_order[original_campaign_id]
-            campaign_loc_std = campaign_data_subset.loc[original_campaign_id, CAMPAIGN_LOCATION_COL]
-            campaign_region = get_location_region_pred(campaign_loc_std)
-
-            # Proximity Score: 2 for exact match, 1 for region match, 0 otherwise
+            gnn_score = gnn_scores_in_order[original_campaign_id]; campaign_loc_std = campaign_data_subset.loc[original_campaign_id, CAMPAIGN_LOCATION_COL]; campaign_region = get_location_region_pred(campaign_loc_std)
             proximity_score = 2 if campaign_loc_std == user_loc_standardized else (1 if campaign_region != "Other" and campaign_region != "Unknown Region" and campaign_region == user_region else 0)
-
-            # Semantic Similarity Scores
             interest_promo_sim = 0.0; watch_cat_sim = 0.0
-            camp_promo_embed = campaign_promo_embeddings.get(original_campaign_id)
-            camp_cat_embed = campaign_category_embeddings.get(original_campaign_id)
-
+            camp_promo_embed = campaign_promo_embeddings.get(original_campaign_id); camp_cat_embed = campaign_category_embeddings.get(original_campaign_id)
             try:
-                # Check if embeddings are valid (non-zero and correct shape) before calculating similarity
-                if user_interest_emb_np.size > 1 and camp_promo_embed is not None and camp_promo_embed.size > 1 and user_interest_emb_np.shape[1] == camp_promo_embed.shape[0]:
-                     interest_promo_sim = cosine_similarity(user_interest_emb_np, camp_promo_embed.reshape(1, -1))[0][0]
-                if user_watch_emb_np.size > 1 and camp_cat_embed is not None and camp_cat_embed.size > 1 and user_watch_emb_np.shape[1] == camp_cat_embed.shape[0]:
-                     watch_cat_sim = cosine_similarity(user_watch_emb_np, camp_cat_embed.reshape(1, -1))[0][0]
-            except Exception as sim_e:
-                 logger.warning(f"[{func_name}] Similarity calculation error for campaign {original_campaign_id}: {sim_e}")
+                if user_interest_emb_np.size > 1 and camp_promo_embed is not None and camp_promo_embed.size > 1 and user_interest_emb_np.shape[1] == camp_promo_embed.shape[0]: interest_promo_sim = cosine_similarity(user_interest_emb_np, camp_promo_embed.reshape(1, -1))[0][0]
+                if user_watch_emb_np.size > 1 and camp_cat_embed is not None and camp_cat_embed.size > 1 and user_watch_emb_np.shape[1] == camp_cat_embed.shape[0]: watch_cat_sim = cosine_similarity(user_watch_emb_np, camp_cat_embed.reshape(1, -1))[0][0]
+            except Exception as sim_e: logger.warning(f"[{func_name}] Sim calc error for {original_campaign_id}: {sim_e}")
+            all_candidates_info.append({'campaign_id': original_campaign_id, 'gnn_score': gnn_score, 'interest_promo_sim': max(0, float(interest_promo_sim)), 'watch_cat_sim': max(0, float(watch_cat_sim)), 'location': campaign_loc_std, 'proximity': proximity_score })
 
-            all_candidates_info.append({
-                'campaign_id': original_campaign_id,
-                'gnn_score': gnn_score,
-                'interest_promo_sim': max(0, float(interest_promo_sim)), # Ensure non-negative
-                'watch_cat_sim': max(0, float(watch_cat_sim)), # Ensure non-negative
-                'location': campaign_loc_std,
-                'proximity': proximity_score
-            })
-
-        # --- 7. Separate and Rank within Groups ---
-        logger.info(f"[{func_name}] Ranking {len(all_candidates_info)} candidates within proximity groups...")
-        exact_matches = []; region_matches = []; other_matches = []
+        # --- 7. Rank Candidates ---
+        logger.info(f"[{func_name}] Ranking {len(all_candidates_info)} candidates..."); exact_matches = []; region_matches = []; other_matches = []
         for cand in all_candidates_info:
             if cand['proximity'] == 2: exact_matches.append(cand)
             elif cand['proximity'] == 1: region_matches.append(cand)
             else: other_matches.append(cand)
-
-        # Define ranking key: Prioritize watch history similarity, then interest similarity, then GNN score
         ranking_key = lambda x: (x['watch_cat_sim'], x['interest_promo_sim'], x['gnn_score'])
-        exact_matches.sort(key=ranking_key, reverse=True)
-        region_matches.sort(key=ranking_key, reverse=True)
-        other_matches.sort(key=ranking_key, reverse=True) # Rank others too, just in case
+        exact_matches.sort(key=ranking_key, reverse=True); region_matches.sort(key=ranking_key, reverse=True); other_matches.sort(key=ranking_key, reverse=True)
         logger.debug(f"Ranked {len(exact_matches)} exact, {len(region_matches)} region, {len(other_matches)} other matches.")
 
         # --- 8. Build Final List ---
-        logger.info(f"[{func_name}] Building final recommendation list (Top {num_recommendations})...");
-        final_recommendations_candidates = []; processed_ids = set(); num_recommendations = 10 # Target number of recs
-
-        # Fill primarily with exact matches
-        for cand in exact_matches:
-            if len(final_recommendations_candidates) >= num_recommendations: break
-            if cand['campaign_id'] not in processed_ids:
-                final_recommendations_candidates.append(cand); processed_ids.add(cand['campaign_id'])
-
-        # Fill remaining slots with region matches
+        final_recommendations_candidates = []; processed_ids = set(); num_recommendations = 10
+        final_recommendations_candidates.extend([c for c in exact_matches if c['campaign_id'] not in processed_ids and not processed_ids.add(c['campaign_id'])][:num_recommendations])
         if len(final_recommendations_candidates) < num_recommendations:
-             needed = num_recommendations - len(final_recommendations_candidates)
-             for cand in region_matches:
-                 if len(final_recommendations_candidates) >= num_recommendations: break
-                 if cand['campaign_id'] not in processed_ids:
-                     final_recommendations_candidates.append(cand); processed_ids.add(cand['campaign_id'])
-
-        # Fill remaining slots with other matches if still needed (less common)
+             final_recommendations_candidates.extend([c for c in region_matches if c['campaign_id'] not in processed_ids and not processed_ids.add(c['campaign_id'])][:num_recommendations - len(final_recommendations_candidates)])
         if len(final_recommendations_candidates) < num_recommendations:
-             needed = num_recommendations - len(final_recommendations_candidates)
-             for cand in other_matches:
-                  if len(final_recommendations_candidates) >= num_recommendations: break
-                  if cand['campaign_id'] not in processed_ids:
-                      final_recommendations_candidates.append(cand); processed_ids.add(cand['campaign_id'])
+             final_recommendations_candidates.extend([c for c in other_matches if c['campaign_id'] not in processed_ids and not processed_ids.add(c['campaign_id'])][:num_recommendations - len(final_recommendations_candidates)])
+        logger.info(f"Final recommendation list size: {len(final_recommendations_candidates)}")
 
-        logger.info(f"Final recommendation candidate list size: {len(final_recommendations_candidates)}")
-
-        # --- 9. Format Output & Calculate Satisfaction (DETAILED Explainability) ---
-        logger.info(f"[{func_name}] Formatting final output with detailed explanations...")
-        results_list = []; total_weighted_score = 0
-        # Weights for satisfaction score based on proximity
-        proximity_satisfaction_weights = {2: 1.0, 1: 0.75, 0: 0.5} # Give non-local matches some weight too
-        SIM_THRESHOLD = 0.25 # Threshold to consider a semantic match 'strong'
-        HIGH_GNN_THRESHOLD = 0.7 # Threshold to consider GNN score 'high' for explanation
-
+        # --- 9. Format Output & Calculate Satisfaction ---
+        logger.info(f"[{func_name}] Formatting final output..."); results_list = []; total_weighted_score = 0
+        proximity_satisfaction_weights = {2: 1.0, 1: 0.75, 0: 0.5}; SIM_THRESHOLD = 0.25; HIGH_GNN_THRESHOLD = 0.7
         for rank, candidate in enumerate(final_recommendations_candidates):
             original_campaign_id = candidate['campaign_id']
             try:
-                # Retrieve full campaign info using the original ID
-                campaign_info_series = campaigns_df_preprocessed.loc[original_campaign_id]
-                # Use GNN score directly for display/ranking value
-                display_score = candidate['gnn_score']
-
-                # Build dynamic reason string
-                reason_parts = []
-                proximity_level = candidate['proximity']
-                watch_sim = candidate['watch_cat_sim']
-                interest_sim = candidate['interest_promo_sim']
-                gnn_score_val = candidate['gnn_score']
-
-                # Add proximity reason first
+                campaign_info_series = campaigns_df_preprocessed.loc[original_campaign_id]; display_score = candidate['gnn_score']
+                reason_parts = []; proximity_level = candidate['proximity']; watch_sim = candidate['watch_cat_sim']; interest_sim = candidate['interest_promo_sim']; gnn_score_val = candidate['gnn_score']
                 if proximity_level == 2: reason_parts.append("Exact Location Match")
                 elif proximity_level == 1: reason_parts.append("Nearby Region Match")
-
-                # Add semantic reasons
-                is_watch_strong = watch_sim >= SIM_THRESHOLD
-                is_interest_strong = interest_sim >= SIM_THRESHOLD
-
+                is_watch_strong = watch_sim >= SIM_THRESHOLD; is_interest_strong = interest_sim >= SIM_THRESHOLD
                 if is_watch_strong: reason_parts.append(f"Matches Watch History ({watch_sim:.2f})")
-                # Add interest match only if watch history didn't match strongly OR if it's also strong
-                if is_interest_strong and (not is_watch_strong or interest_sim > watch_sim): # Prioritize stronger match
-                      reason_parts.append(f"Matches Interests ({interest_sim:.2f})")
-                elif is_interest_strong: # Add if it's strong but watch was stronger/also strong
-                     reason_parts.append(f"Interest Match ({interest_sim:.2f})")
-
-
-                # Add GNN score reason if no strong semantic match or if score is high
+                if is_interest_strong and (not is_watch_strong or interest_sim > watch_sim): reason_parts.append(f"Matches Interests ({interest_sim:.2f})")
+                elif is_interest_strong: reason_parts.append(f"Interest Match ({interest_sim:.2f})")
                 if not is_watch_strong and not is_interest_strong:
-                    if gnn_score_val >= HIGH_GNN_THRESHOLD:
-                        reason_parts.append(f"High Relevance Score ({gnn_score_val:.2f})")
-                    else: # Default if no other strong signal
-                        reason_parts.append(f"Good Overall Match ({gnn_score_val:.2f})")
-                elif gnn_score_val >= HIGH_GNN_THRESHOLD + 0.1: # Add high score even if semantic match exists, if score is very high
-                     reason_parts.append(f"Very High Relevance ({gnn_score_val:.2f})")
-
-
+                    if gnn_score_val >= HIGH_GNN_THRESHOLD: reason_parts.append(f"High Relevance Score ({gnn_score_val:.2f})")
+                    else: reason_parts.append(f"Good Overall Match ({gnn_score_val:.2f})")
+                elif gnn_score_val >= HIGH_GNN_THRESHOLD + 0.1: reason_parts.append(f"Very High Relevance ({gnn_score_val:.2f})")
                 reason = " + ".join(reason_parts) if reason_parts else "General Recommendation"
-
-                results_list.append({
-                    "campaign_id": original_campaign_id,
-                    "business_name": campaign_info_series.get(CAMPAIGN_BUSINESS_NAME_COL, "N/A"),
-                    "promo": campaign_info_series.get(CAMPAIGN_PROMO_COL, "N/A"),
-                    "category": campaign_info_series.get(CAMPAIGN_CATEGORY_COL, "N/A"),
-                    "location": candidate['location'].title(), # Capitalize location for display
-                    "proximity_level": proximity_level,
-                    "score": round(display_score, 4), # GNN score
-                    "tier": dynamic_user_tier, # User's calculated tier
-                    "interest_promo_sim": round(interest_sim, 4),
-                    "watch_cat_sim": round(watch_sim, 4),
-                    "reason": reason # Dynamic explanation
-                })
-                # Calculate weighted score for overall satisfaction metric
-                total_weighted_score += display_score * proximity_satisfaction_weights.get(proximity_level, 0.1) # Use default low weight if proximity somehow invalid
-
-            except KeyError:
-                logger.warning(f"[{func_name}] Campaign ID {original_campaign_id} from candidate list not found in preprocessed index during final formatting. Skipping.")
-                continue
-            except Exception as e:
-                logger.warning(f"[{func_name}] Error formatting final recommendation for {original_campaign_id}: {e}", exc_info=True)
-                continue
-
-        # Calculate overall satisfaction percentage
+                results_list.append({"campaign_id": original_campaign_id, "business_name": campaign_info_series.get(CAMPAIGN_BUSINESS_NAME_COL, "N/A"), "promo": campaign_info_series.get(CAMPAIGN_PROMO_COL, "N/A"), "category": campaign_info_series.get(CAMPAIGN_CATEGORY_COL, "N/A"), "location": candidate['location'].title(), "proximity_level": proximity_level, "score": round(display_score, 4), "tier": dynamic_user_tier, "interest_promo_sim": round(interest_sim, 4), "watch_cat_sim": round(watch_sim, 4), "reason": reason })
+                total_weighted_score += display_score * proximity_satisfaction_weights.get(proximity_level, 0.1)
+            except KeyError: logger.warning(f"[{func_name}] Campaign ID {original_campaign_id} missing during formatting. Skipping."); continue
+            except Exception as e: logger.warning(f"[{func_name}] Error formatting final rec {original_campaign_id}: {e}", exc_info=True); continue
         satisfaction_overall = (total_weighted_score / len(results_list)) * 100 if results_list else 0.0
-        num_exact = sum(1 for r in results_list if r['proximity_level'] == 2)
-        num_region = sum(1 for r in results_list if r['proximity_level'] == 1)
-        logger.info(f"[{func_name}] Prediction successful for User: {user_display_id}. Recommendations: {len(results_list)} (Exact: {num_exact}, Region: {num_region}). Est. Satisfaction: {satisfaction_overall:.2f}%.")
+        num_exact = sum(1 for r in results_list if r['proximity_level'] == 2); num_region = sum(1 for r in results_list if r['proximity_level'] == 1)
+        logger.info(f"[{func_name}] Prediction successful for User: {user_display_id}. Recs: {len(results_list)} (Exact: {num_exact}, Region: {num_region}). Est. Satisfaction: {satisfaction_overall:.2f}%.")
 
         # --- Cleanup ---
-        # Explicitly delete large tensors that were created in this function scope
-        if 'all_node_embeddings' in locals(): del all_node_embeddings
-        if 'user_embedding' in locals(): del user_embedding
-        if 'campaign_embeddings_gnn' in locals(): del campaign_embeddings_gnn
-        if 'all_scores' in locals(): del all_scores
-        if 'all_scores_sigmoid' in locals(): del all_scores_sigmoid
-        # SBERT embeddings are potentially large numpy arrays
-        if 'campaign_promo_embeddings' in locals(): del campaign_promo_embeddings
-        if 'campaign_category_embeddings' in locals(): del campaign_category_embeddings
-        if 'user_interest_emb_np' in locals(): del user_interest_emb_np
-        if 'user_watch_emb_np' in locals(): del user_watch_emb_np
-        gc.collect() # Trigger garbage collection
+        if 'all_node_embeddings' in locals(): del all_node_embeddings;
+        if 'user_embedding' in locals(): del user_embedding;
+        if 'campaign_embeddings_gnn' in locals(): del campaign_embeddings_gnn;
+        if 'all_scores' in locals(): del all_scores;
+        if 'all_scores_sigmoid' in locals(): del all_scores_sigmoid;
+        if 'campaign_promo_embeddings' in locals(): del campaign_promo_embeddings;
+        if 'campaign_category_embeddings' in locals(): del campaign_category_embeddings;
+        if 'user_interest_emb_np' in locals(): del user_interest_emb_np;
+        if 'user_watch_emb_np' in locals(): del user_watch_emb_np;
+        gc.collect()
 
         end_total_time = time.time()
         logger.info(f"[{func_name}] Total prediction request time for User {user_display_id}: {end_total_time - start_total_time:.3f}s")
-        return results_list, satisfaction_overall, None # Return results, satisfaction, and no error message
+        return results_list, satisfaction_overall, None
 
     except Exception as e:
         logger.error(f"[{func_name}] UNEXPECTED ERROR during prediction for User {user_display_id}: {e}", exc_info=True)
-        # Attempt cleanup even on error
         if 'all_node_embeddings' in locals(): del all_node_embeddings
         if 'campaign_promo_embeddings' in locals(): del campaign_promo_embeddings
         if 'campaign_category_embeddings' in locals(): del campaign_category_embeddings
         gc.collect()
-        # Return empty results and an error message
         return [], 0.0, f'An internal error occurred during prediction: {type(e).__name__}. Please try again.'
     finally:
-        # Ensure cache clear runs even if errors occurred
         clear_flask_context_cache()
 
 # === Flask Routes ===
 def _get_dropdown_options():
     """Helper to populate dropdown options for the form, using loaded artifacts or defaults."""
-    options = {
-        'common_interests': INTERESTS_OPTIONS, # From constants
-        'common_watch_categories': WATCH_CATEGORY_OPTIONS, # From constants
-        'locations': ['Enter Manually'], # Default
-        'age_groups': ["16-22 (Student)", "23-30 (Young Pro)", "31-40 (Settling Down)", "41-55 (Established)", "56-65 (Senior)", "65+ (Retired)"], # Default
-        'device_types': ["Android Smartphone (Mid-Range)", "Android Smartphone (High-End)", "iOS Smartphone", "Tablet (Android)", "Tablet (iOS)", "Windows Desktop/Laptop", "MacOS Desktop/Laptop"], # Default
-        'activity_levels': ["Very High (Daily+)", "High (Multiple Weekly)", "Medium (Weekly)", "Low (Monthly)", "Very Low (Infrequent)"], # Default
-        'monetary_levels': ["Low Spender", "Medium Spender", "High Spender", "Very High Spender"], # Default
-        'weather_options': ["Scorching Heat", "Humid & Sticky", "Pleasant Breeze", "Monsoon Downpour", "Winter Fog (North India)", "Dry Heat (Rajasthan)", "Coastal Humidity", "Hill Station Chill", "Clear Skies", "Overcast"] # Default
-    }
+    options = {'common_interests': INTERESTS_OPTIONS, 'common_watch_categories': WATCH_CATEGORY_OPTIONS, 'locations': ['Enter Manually'], 'age_groups': ["16-22 (Student)", "23-30 (Young Pro)", "31-40 (Settling Down)", "41-55 (Established)", "56-65 (Senior)", "65+ (Retired)"], 'device_types': ["Android Smartphone (Mid-Range)", "Android Smartphone (High-End)", "iOS Smartphone", "Tablet (Android)", "Tablet (iOS)", "Windows Desktop/Laptop", "MacOS Desktop/Laptop"], 'activity_levels': ["Very High (Daily+)", "High (Multiple Weekly)", "Medium (Weekly)", "Low (Monthly)", "Very Low (Infrequent)"], 'monetary_levels': ["Low Spender", "Medium Spender", "High Spender", "Very High Spender"], 'weather_options': ["Scorching Heat", "Humid & Sticky", "Pleasant Breeze", "Monsoon Downpour", "Winter Fog (North India)", "Dry Heat (Rajasthan)", "Coastal Humidity", "Hill Station Chill", "Clear Skies", "Overcast"]}
     error_msg = None
     try:
-        if loaded_artifacts is None:
-            raise RuntimeError("Model artifacts are not loaded yet.") # Should not happen if global load worked
-
-        # Try loading options from encoders saved in artifacts
+        if loaded_artifacts is None: raise RuntimeError("Model artifacts not loaded.")
         location_encoder = loaded_artifacts.get('location_encoder')
-        if location_encoder and hasattr(location_encoder, 'classes_'):
-            # Use title case for display, filter out 'unknown'
-            options['locations'] = sorted([loc.title() for loc in location_encoder.classes_ if loc != 'unknown'])
-
-        # Define map for artifact keys to option keys and default values
-        encoder_map = {
-             f'{USER_AGE_COL}_encoder': 'age_groups',
-             f'{USER_DEVICE_COL}_encoder': 'device_types',
-             f'{USER_ACTIVITY_COL}_encoder': 'activity_levels',
-             f'{USER_MONETARY_COL}_encoder': 'monetary_levels',
-             f'{USER_WEATHER_COL}_encoder': 'weather_options',
-        }
-
+        if location_encoder and hasattr(location_encoder, 'classes_'): options['locations'] = sorted([loc.title() for loc in location_encoder.classes_ if loc != 'unknown'])
+        encoder_map = {f'{USER_AGE_COL}_encoder': 'age_groups', f'{USER_DEVICE_COL}_encoder': 'device_types', f'{USER_ACTIVITY_COL}_encoder': 'activity_levels', f'{USER_MONETARY_COL}_encoder': 'monetary_levels', f'{USER_WEATHER_COL}_encoder': 'weather_options'}
         for artifact_key, option_key in encoder_map.items():
              encoder = loaded_artifacts.get(artifact_key)
-             if encoder and hasattr(encoder, 'classes_'):
-                 # Use title case for display options derived from encoder
-                 options[option_key] = [opt.title() for opt in encoder.classes_]
-             else:
-                 logger.warning(f"Encoder '{artifact_key}' not found or invalid in artifacts. Using default options for '{option_key}'.")
-
+             if encoder and hasattr(encoder, 'classes_'): options[option_key] = [opt.title() for opt in encoder.classes_]
+             else: logger.warning(f"Encoder '{artifact_key}' not found/invalid. Using default options for '{option_key}'.")
     except Exception as e:
-        logger.error(f"Error populating dropdown options from artifacts: {e}", exc_info=True)
+        logger.error(f"Error populating dropdown options: {e}", exc_info=True)
         error_msg = "Error loading some dropdown options. Using default values."
-        # Reset to defaults just in case something went wrong partially
-        # (Redundant due to initialization, but safe)
-
-    # Ensure all expected keys exist, even if loading failed
-    default_keys = list(options.keys()) # Get keys from initial definition
+    default_keys = list(options.keys())
     for key in default_keys:
-        if key not in options or not options[key]: # If key missing or list empty
-             logger.warning(f"Dropdown options for '{key}' ended up empty. Check artifact loading or defaults.")
-             # Optionally re-assign default here if truly necessary
-
+        if key not in options or not options[key]: logger.warning(f"Dropdown options for '{key}' empty.")
     return options, error_msg
 
 @app.route('/')
 def index():
     """Renders the main page with the input form."""
     options, error_msg = _get_dropdown_options()
-    # Render template without results initially
     return render_template('index.html', results=None, error=error_msg, submitted=False, options=options)
 
 @app.route('/predict', methods=['POST'])
 def predict():
     """Handles form submission, calls prediction function, and renders results."""
     error_msg = None; recommendations = []; satisfaction=0.0
-    options, error_msg_opts = _get_dropdown_options() # Get options for rendering again
+    options, error_msg_opts = _get_dropdown_options()
+    submitted_data_for_template = request.form.to_dict(flat=False)
     if error_msg_opts:
-        # If options failed to load, show error immediately
         logger.warning("Dropdown options failed to load, returning error on predict request.")
-        return render_template('index.html', results=[], error=error_msg_opts, submitted=True, satisfaction=0, options=options, submitted_data=request.form.to_dict())
-
-    submitted_data_for_template = request.form.to_dict(flat=False) # Keep lists for multi-selects
-    # Simplify single-value lists back to strings for easier template logic if needed
-    # for key, value in submitted_data_for_template.items():
-    #     if isinstance(value, list) and len(value) == 1 and key not in [USER_INTERESTS_COL, USER_WATCH_CATEGORIES_COL]:
-    #         submitted_data_for_template[key] = value[0]
-
-
+        return render_template('index.html', results=[], error=error_msg_opts, submitted=True, satisfaction=0, options=options, submitted_data=submitted_data_for_template)
     try:
-        user_data = {} # Dictionary to hold processed user data for prediction function
-        form_ok = True
-
-        # --- Form Data Extraction and Basic Validation ---
-        # Define required fields and get their values
-        required_fields = {
-            USER_LOCATION_COL: request.form.get('location'),
-            USER_ACTIVITY_COL: request.form.get('activity_level')
-        }
+        user_data = {}; form_ok = True
+        required_fields = {USER_LOCATION_COL: request.form.get('location'), USER_ACTIVITY_COL: request.form.get('activity_level')}
         for key, value in required_fields.items():
-            if not value or value.strip() == '': # Check if empty or just whitespace
-                error_msg = f"Please provide a value for '{key.replace('_',' ').title()}'."
-                form_ok = False
-                break # Stop validation on first error
-            user_data[key] = value.strip() # Store stripped value
-
+            if not value or value.strip() == '': error_msg = f"Please provide a value for '{key.replace('_',' ').title()}'."; form_ok = False; break
+            user_data[key] = value.strip()
         if form_ok:
-            # Get optional fields, providing defaults if missing
             user_data[USER_ID_COL] = request.form.get('user_id', f"ANON_{random.randint(1000,9999)}").strip()
-            user_data[USER_AGE_COL] = request.form.get('age_group', 'unknown') # Default to unknown if not provided
+            user_data[USER_AGE_COL] = request.form.get('age_group', 'unknown')
             user_data[USER_DEVICE_COL] = request.form.get('device_type', 'unknown')
             user_data[USER_MONETARY_COL] = request.form.get('monetary_level', 'unknown')
             user_data[USER_WEATHER_COL] = request.form.get('simulated_weather', 'unknown')
-
-            # Get multi-select fields (interests, watch categories)
             interests_list = request.form.getlist(USER_INTERESTS_COL)
             watch_list = request.form.getlist(USER_WATCH_CATEGORIES_COL)
-            user_data[USER_INTERESTS_COL] = interests_list if interests_list else [] # Ensure it's a list
-            user_data[USER_WATCH_CATEGORIES_COL] = watch_list if watch_list else [] # Ensure it's a list
-
-            # Log received data (excluding potentially long lists for brevity)
+            user_data[USER_INTERESTS_COL] = interests_list if interests_list else []
+            user_data[USER_WATCH_CATEGORIES_COL] = watch_list if watch_list else []
             log_data = {k:v for k,v in user_data.items() if k not in [USER_INTERESTS_COL, USER_WATCH_CATEGORIES_COL]}
             log_data[f"{USER_INTERESTS_COL}_count"] = len(user_data[USER_INTERESTS_COL])
             log_data[f"{USER_WATCH_CATEGORIES_COL}_count"] = len(user_data[USER_WATCH_CATEGORIES_COL])
             logger.info(f"Received prediction request for user data: {log_data}")
-
-            # --- Call Prediction Function ---
             recommendations, satisfaction, pred_error_msg = predict_campaigns_gnn_flask(user_data)
-            if pred_error_msg:
-                 error_msg = pred_error_msg # Use error message from prediction function
-
-        elif not error_msg: # If form_ok is False but no specific message was set
-            error_msg = "Form validation failed. Please check required fields."
-
+            if pred_error_msg: error_msg = pred_error_msg
+        elif not error_msg: error_msg = "Form validation failed. Please check required fields."
     except Exception as e:
         logger.error(f"Error processing /predict request: {e}", exc_info=True)
         error_msg = f"An unexpected server error occurred while processing your request."
-        recommendations = [] # Ensure recommendations is empty on error
-        satisfaction = 0.0
-
-    # Render the template again with results (or errors) and submitted data
-    return render_template('index.html',
-                           results=recommendations,
-                           error=error_msg,
-                           submitted=True, # Flag that form was submitted
-                           satisfaction=satisfaction,
-                           submitted_data=submitted_data_for_template, # Pass back the raw form data
-                           options=options)
+        recommendations = []; satisfaction = 0.0
+    return render_template('index.html', results=recommendations, error=error_msg, submitted=True, satisfaction=satisfaction, submitted_data=submitted_data_for_template, options=options)
 
 # === Main Execution (Only for running locally with `python app.py`) ===
 if __name__ == "__main__":
-    # NOTE: load_model_and_data() is now called in the global scope above.
-    # This block is only executed when running the script directly (e.g., python app.py).
-    # Gunicorn does NOT run this block.
     logger.info("Starting Flask DEVELOPMENT server (via __main__)...")
-
-    # Check if model loading succeeded (basic check)
     if model is None or predictor is None or loaded_artifacts is None:
-         logger.warning("!!! Models/artifacts may not have loaded correctly during global initialization. Check logs. !!!")
-
-    # Get debug setting from environment variable, default to False
+         logger.warning("!!! Models/artifacts may not have loaded correctly. Check logs. !!!")
     is_debug = os.environ.get("FLASK_DEBUG", "False").lower() in ("true", "1", "t")
-    # Get port from environment or default to 5000 for local dev
     port = int(os.environ.get("PORT", 5000))
-
-    # Use threaded=True only if not in debug mode for potentially better handling of concurrent local requests.
-    # Werkzeug's reloader (used in debug mode) can have issues with threading.
     use_threading = not is_debug
-
     logger.info(f"Running development server on http://0.0.0.0:{port}/ | Debug: {is_debug} | Threaded: {use_threading}")
     app.run(host='0.0.0.0', port=port, debug=is_debug, threaded=use_threading)
